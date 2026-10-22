@@ -1,0 +1,48 @@
+{# Copyright (C) 2025-2026 Intel Corporation #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{#
+  agent_sandbox | default python SandboxTemplate
+
+  Lives in agent_sandbox_namespace with the router, so the controller's generated
+  NetworkPolicy (ingress from app=sandbox-router pods in the same namespace)
+  admits router -> sandbox traffic:
+
+    from k8s_agent_sandbox import SandboxClient
+    SandboxClient().create_sandbox(template="python-sandbox-template",
+                                   namespace="<agent_sandbox_namespace>")
+#}
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: python-sandbox-template
+  namespace: "{{ agent_sandbox_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: agentic-ai-stack
+spec:
+  # service: true creates a headless Service per Sandbox pod. Required in v0.4.6+
+  # for in-cluster DNS routing and SDK Tunnel mode.
+  service: true
+  podTemplate:
+    spec:
+      containers:
+      - name: runtime
+        image: "{{ agent_sandbox_python_runtime_image }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: api
+          containerPort: 8888
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL

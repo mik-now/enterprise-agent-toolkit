@@ -1,29 +1,28 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Redis Stack Role Defaults
+# redis_stack | defaults
 # =============================================================================
-# Redis Stack with RediSearch module — provides short-term memory,
-# session state, and semantic vector cache for agentic workloads.
+# Redis Stack with the RediSearch module: short-term memory, session state and
+# a semantic vector cache for agentic workloads.
 #
 # In-cluster URL after deployment:
-#   redis://redis-stack-server.{{ redis_stack_namespace }}.svc.cluster.local:6379
+#   redis://redis-stack-server.<redis_stack_namespace>.svc.cluster.local:6379
+# Credentials: Secret redis-stack-server-credentials (REDIS_PASSWORD, REDIS_URL)
 # =============================================================================
 
-redis_stack_namespace: "redis"
-redis_stack_release_name: "redis"
-# Empty = use the cluster's default StorageClass (provided by the ai-solutions
-# `storage` platform component). Override to pin a specific class.
-redis_stack_storage_class: ""
-redis_stack_persistence_size: "10Gi"
+# ── Version / source ──────────────────────────────────────────────────────────
+redis_stack_chart_path: "{{ role_path }}/../../charts/redis-stack"  # vendored chart
+redis_stack_release_name: "redis"                                     # Helm release name
 
-redis_stack_auth_enabled: true
-redis_stack_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+# ── Placement ─────────────────────────────────────────────────────────────────
+redis_stack_namespace: "redis"  # created by install
 
-# Resources
-redis_stack_resources:
-  requests:
-    cpu: "250m"
-    memory: "512Mi"
-  limits:
-    cpu: "2"
-    memory: "2Gi"
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+redis_stack_storage_class: ""         # empty = cluster default StorageClass (ai-solutions storage)
+redis_stack_persistence_size: "10Gi"  # PVC size of the Redis data volume
+redis_stack_auth_enabled: true        # require a password (unauthenticated Redis allows arbitrary code)
+# Used on first install only; later runs keep the password stored in the credentials Secret.
+redis_stack_password: "{{ lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+redis_stack_teardown_delete_pvcs: false  # true = teardown also deletes the namespace and its PVCs

@@ -1,33 +1,56 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# KubeRay — Validate
+# kuberay | validate
+# =============================================================================
+# Read-only. Asserts the operator is available and the RayCluster reports ready
+# with a running head pod.
 # =============================================================================
 
-- name: "kuberay | validate | Check operator deployment"
+- name: "kuberay | validate | Read operator deployment"
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
     namespace: "{{ kuberay_namespace }}"
     label_selectors:
       - app.kubernetes.io/name=kuberay-operator
-  register: _val_operator
-  failed_when: _val_operator.resources | default([]) | length == 0
+  register: _kuberay_operator
+  check_mode: false
 
-- name: "kuberay | validate | Check Ray head pod"
+- name: "kuberay | validate | Read RayCluster"
+  kubernetes.core.k8s_info:
+    api_version: ray.io/v1
+    kind: RayCluster
+    name: "{{ kuberay_release_name }}"
+    namespace: "{{ kuberay_namespace }}"
+  register: _kuberay_cluster
+  check_mode: false
+
+- name: "kuberay | validate | Read Ray head pod"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: "{{ kuberay_namespace }}"
     label_selectors:
       - ray.io/node-type=head
-  register: _val_head
-  failed_when: >-
-    _val_head.resources | default([]) | length == 0 or
-    _val_head.resources | selectattr('status.phase', 'eq', 'Running') | list | length == 0
+      - "ray.io/cluster={{ kuberay_release_name }}"
+    field_selectors:
+      - status.phase=Running
+  register: _kuberay_head
+  check_mode: false
 
-- name: "kuberay | validate | Summary"
-  ansible.builtin.debug:
-    msg:
-      - "KubeRay operator: OK"
-      - "Ray head pod: OK (Running)"
-      - "Dashboard: http://{{ kuberay_release_name }}-head-svc.{{ kuberay_namespace }}.svc.cluster.local:8265"
+- name: "kuberay | validate | Assert KubeRay is healthy"
+  ansible.builtin.assert:
+    that:
+      - _kuberay_operator.resources | length > 0
+      - _kuberay_operator.resources[0].status.conditions | default([])
+        | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+      - _kuberay_cluster.resources | length > 0
+      - (_kuberay_cluster.resources[0].status.state | default('')) == 'ready'
+      - _kuberay_head.resources | length > 0
+    fail_msg: >-
+      KubeRay in {{ kuberay_namespace }} is not healthy: operator available, RayCluster
+      {{ kuberay_release_name }} state 'ready' and a running head pod are all required
+      (RayCluster state: {{ (_kuberay_cluster.resources | first | default({})).status.state | default('missing') }}).
+    quiet: true

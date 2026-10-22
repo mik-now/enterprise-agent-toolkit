@@ -1,270 +1,220 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Agent Sandbox — Install
+# agent_sandbox | install
 # =============================================================================
-# Deploys the kubernetes-sigs/agent-sandbox controller, sandbox-router, and a
-# default SandboxTemplate using the official upstream release manifests
+# Applies the upstream release manifests (CRDs + controller, extensions,
+# sandbox-router), the default python SandboxTemplate + warm pool and, when
+# kata_containers created a Kata RuntimeClass, the Kata template + warm pool.
+# Every run re-applies them, so a version bump takes effect.
 # =============================================================================
 
-- name: "agent_sandbox | Check for existing controller"
+# ── Controller ────────────────────────────────────────────────────────────────
+
+- name: "agent_sandbox | install | Create namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ agent_sandbox_namespace }}"
+
+- name: "agent_sandbox | install | Apply release manifests"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ item }}"
+  loop:
+    - "{{ agent_sandbox_core_manifest_url }}"
+    - "{{ agent_sandbox_extensions_manifest_url }}"
+
+- name: "agent_sandbox | install | Wait for controller"
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
     name: agent-sandbox-controller
     namespace: "{{ agent_sandbox_namespace }}"
-  register: _sandbox_controller
-  failed_when: false
+    wait: true
+    wait_timeout: 600
+  check_mode: false
 
-- name: "agent_sandbox | Already installed — skipping"
-  ansible.builtin.debug:
-    msg: "Agent Sandbox controller already present in {{ agent_sandbox_namespace }} — skipping install."
-  when: _sandbox_controller.resources | default([]) | length > 0
+# ── Sandbox router ────────────────────────────────────────────────────────────
 
-- name: "agent_sandbox | Install"
-  when: _sandbox_controller.resources | default([]) | length == 0
-  block:
+- name: "agent_sandbox | install | Read sandbox-router auth token"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: sandbox-router-auth
+    namespace: "{{ agent_sandbox_namespace }}"
+  register: _agent_sandbox_router_secret
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
 
-    - name: "agent_sandbox | Create namespace"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ agent_sandbox_namespace }}"
-
-    # ── Core components (CRDs + controller) from official release manifests ──
-
-    - name: "agent_sandbox | Apply core manifest (CRDs + controller)"
-      kubernetes.core.k8s:
-        state: present
-        src: "{{ agent_sandbox_core_manifest_url }}"
-
-    - name: "agent_sandbox | Apply extensions manifest (SandboxTemplate/Claim/WarmPool CRDs)"
-      kubernetes.core.k8s:
-        state: present
-        src: "{{ agent_sandbox_extensions_manifest_url }}"
-
-    - name: "agent_sandbox | Wait for controller to be ready"
-      kubernetes.core.k8s_info:
-        kind: Deployment
+# Created once: a new token on every run would break connected clients.
+- name: "agent_sandbox | install | Create sandbox-router auth token"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: sandbox-router-auth
         namespace: "{{ agent_sandbox_namespace }}"
-        name: agent-sandbox-controller
-      register: _asb_controller
-      until: >-
-        _asb_controller.resources | length > 0 and
-        _asb_controller.resources[0].status.readyReplicas is defined and
-        _asb_controller.resources[0].status.readyReplicas == _asb_controller.resources[0].spec.replicas
-      retries: 60
-      delay: 10
+      type: Opaque
+      stringData:
+        ROUTER_AUTH_TOKEN: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=hexdigits') }}"
+  no_log: "{{ secure_logs | default(true) | bool }}"
+  when: _agent_sandbox_router_secret.resources | length == 0
 
-    # ── Sandbox router ────────────────────────────────────────────────────────
+# raw.githubusercontent.com throttles (HTTP 429), hence the retries.
+- name: "agent_sandbox | install | Download sandbox-router manifest"
+  ansible.builtin.uri:
+    url: "{{ agent_sandbox_router_manifest_url }}"
+    return_content: true
+  register: _agent_sandbox_router_manifest
+  retries: 5
+  delay: 30
+  until: _agent_sandbox_router_manifest is succeeded
+  check_mode: false
 
-    # The result returns the stored Secret, token included, so it stays out of the log.
-    - name: "agent_sandbox | Create sandbox-router auth token secret"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: sandbox-router-auth
-            namespace: "{{ agent_sandbox_namespace }}"
-          type: Opaque
-          stringData:
-            ROUTER_AUTH_TOKEN: "{{ lookup('password', '/dev/null length=64 chars=hexdigits') }}"
-      register: _router_secret
-      no_log: true
-      ignore_errors: true
+# The upstream manifest expects a locally built image: substitute the published
+# one and pull it instead of the (commented) Never policy.
+- name: "agent_sandbox | install | Apply sandbox-router manifest"
+  kubernetes.core.k8s:
+    state: present
+    namespace: "{{ agent_sandbox_namespace }}"
+    definition: >-
+      {{ _agent_sandbox_router_manifest.content
+         | replace('${ROUTER_IMAGE}', agent_sandbox_router_image)
+         | replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent')
+         | from_yaml_all | list }}
 
-    - name: "agent_sandbox | Check sandbox-router auth token secret"
-      ansible.builtin.assert:
-        that: _router_secret is succeeded
-        fail_msg: "Creating Secret sandbox-router-auth failed: {{ _router_secret.msg | default('no error message returned') }}"
-        quiet: true
-
-    # Download with retry/backoff — raw.githubusercontent throttles (HTTP 429).
-    - name: "agent_sandbox | Download sandbox-router manifest"
-      ansible.builtin.get_url:
-        url: "{{ agent_sandbox_router_manifest_url }}"
-        dest: "/tmp/agent-sandbox-router.yaml"
-        mode: "0644"
-      register: _router_dl
-      retries: 5
-      delay: 30
-      until: _router_dl is not failed
-
-    - name: "agent_sandbox | Read sandbox-router manifest"
-      ansible.builtin.slurp:
-        src: "/tmp/agent-sandbox-router.yaml"
-      register: _router_manifest
-
-    # Substitute the published router image and switch the (commented) Never
-    # pull policy to IfNotPresent so the registry image is pulled.
-    - name: "agent_sandbox | Apply sandbox-router manifest"
-      kubernetes.core.k8s:
-        state: present
-        namespace: "{{ agent_sandbox_namespace }}"
-        definition: >-
-          {{ _router_manifest['content'] | b64decode
-             | replace('${ROUTER_IMAGE}', agent_sandbox_router_image)
-             | replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent')
-             | from_yaml_all | list }}
-
-    - name: "agent_sandbox | Inject ROUTER_AUTH_TOKEN into sandbox-router deployment"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: sandbox-router-deployment
-            namespace: "{{ agent_sandbox_namespace }}"
-          spec:
-            template:
-              spec:
-                containers:
-                  - name: router
-                    env:
-                      - name: ROUTER_AUTH_TOKEN
-                        valueFrom:
-                          secretKeyRef:
-                            name: sandbox-router-auth
-                            key: ROUTER_AUTH_TOKEN
-
-    - name: "agent_sandbox | Wait for sandbox-router to be ready"
-      kubernetes.core.k8s_info:
-        kind: Deployment
-        namespace: "{{ agent_sandbox_namespace }}"
+- name: "agent_sandbox | install | Inject ROUTER_AUTH_TOKEN into sandbox-router"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
         name: sandbox-router-deployment
-      register: _asb_router
-      until: >-
-        _asb_router.resources | length > 0 and
-        _asb_router.resources[0].status.readyReplicas is defined and
-        _asb_router.resources[0].status.readyReplicas == _asb_router.resources[0].spec.replicas
-      retries: 60
-      delay: 10
+        namespace: "{{ agent_sandbox_namespace }}"
+      spec:
+        template:
+          spec:
+            containers:
+              - name: router
+                env:
+                  - name: ROUTER_AUTH_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: sandbox-router-auth
+                        key: ROUTER_AUTH_TOKEN
 
-    # ── Default SandboxTemplate ─────────────────────────────────────────────────
+- name: "agent_sandbox | install | Wait for sandbox-router"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: sandbox-router-deployment
+    namespace: "{{ agent_sandbox_namespace }}"
+    wait: true
+    wait_timeout: 600
+  check_mode: false
 
-    - name: "agent_sandbox | Read default SandboxTemplate"
-      ansible.builtin.slurp:
-        src: "{{ role_path }}/../../charts/agent-sandbox/default-templates.yaml"
-      register: _sandbox_template
+# ── Default python template and warm pool ─────────────────────────────────────
 
-    - name: "agent_sandbox | Apply default SandboxTemplate"
+- name: "agent_sandbox | install | Apply python SandboxTemplate"
+  kubernetes.core.k8s:
+    state: present
+    template: python-sandbox-template.yaml.j2
+
+- name: "agent_sandbox | install | Apply python SandboxWarmPool"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: extensions.agents.x-k8s.io/v1beta1
+      kind: SandboxWarmPool
+      metadata:
+        name: "{{ agent_sandbox_python_warm_pool_name }}"
+        namespace: "{{ agent_sandbox_namespace }}"
+        labels:
+          app: "{{ agent_sandbox_python_warm_pool_name }}"
+      spec:
+        replicas: "{{ agent_sandbox_python_warm_pool_size | int }}"
+        sandboxTemplateRef:
+          name: python-sandbox-template
+  when: (agent_sandbox_python_warm_pool_size | int) > 0
+
+# ── Kata template and warm pool (kata_containers) ─────────────────────────────
+
+- name: "agent_sandbox | install | Read Kata RuntimeClasses"
+  kubernetes.core.k8s_info:
+    api_version: node.k8s.io/v1
+    kind: RuntimeClass
+  register: _agent_sandbox_runtime_classes
+  check_mode: false
+  when: kata_containers_enabled | default(false) | bool  # Foreign: owned by kata_containers
+
+# kata-fc (Firecracker) when kata-deploy created it, else kata-qemu, else none.
+- name: "agent_sandbox | install | Select Kata RuntimeClass"
+  ansible.builtin.set_fact:
+    _agent_sandbox_kata_runtime_class: >-
+      {{ [_agent_sandbox_kata_fc, _agent_sandbox_kata_qemu]
+         | select('in', _agent_sandbox_runtime_classes.resources | default([]) | map(attribute='metadata.name') | list)
+         | first | default('') }}
+  vars:
+    # Foreign: owned by kata_containers
+    _agent_sandbox_kata_fc: "{{ kata_fc_runtime_class | default('kata-fc') }}"
+    _agent_sandbox_kata_qemu: "{{ kata_qemu_runtime_class | default('kata-qemu') }}"
+
+- name: "agent_sandbox | install | Report missing Kata RuntimeClass"
+  ansible.builtin.debug:
+    msg: >-
+      kata_containers_enabled is true but neither '{{ kata_fc_runtime_class | default('kata-fc') }}' nor
+      '{{ kata_qemu_runtime_class | default('kata-qemu') }}' RuntimeClass exists (see the kata_containers
+      component output). Skipping the Kata SandboxTemplate and warm pool.
+  when:
+    - kata_containers_enabled | default(false) | bool  # Foreign: owned by kata_containers
+    - _agent_sandbox_kata_runtime_class | length == 0
+
+- name: "agent_sandbox | install | Apply Kata template and warm pool"
+  when: _agent_sandbox_kata_runtime_class | length > 0
+  block:
+    - name: "agent_sandbox | install | Apply Kata SandboxTemplate"
       kubernetes.core.k8s:
         state: present
-        definition: >-
-          {{ _sandbox_template['content'] | b64decode
-             | replace('python-runtime-sandbox:AGENT_SANDBOX_VERSION', agent_sandbox_python_runtime_image)
-             | replace('AGENT_SANDBOX_VERSION', agent_sandbox_version)
-             | replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent')
-             | from_yaml_all | list }}
-
-    # ── Default python warm pool (pre-warmed sandbox pods) ──────────────────────
-
-    - name: "agent_sandbox | Create default python SandboxWarmPool"
-      kubernetes.core.k8s:
-        state: present
-        definition: "{{ _warm_pool_manifest | from_yaml }}"
+        template: kata-sandbox-template.yaml.j2
       vars:
-        _warm_pool_manifest: |
+        # Foreign: owned by kata_containers
+        _agent_sandbox_kata_node_label_key: "{{ kata_node_label_key | default('ei-kata-eligible') }}"
+        _agent_sandbox_kata_node_label_value: "{{ kata_node_label_value | default('true') }}"
+
+    # No readiness gate on the pool: a per-node virtualisation problem must not
+    # hang the stack deployment.
+    - name: "agent_sandbox | install | Apply Kata SandboxWarmPool"
+      kubernetes.core.k8s:
+        state: present
+        definition:
           apiVersion: extensions.agents.x-k8s.io/v1beta1
           kind: SandboxWarmPool
           metadata:
-            name: "{{ agent_sandbox_python_warm_pool_name }}"
+            name: "{{ kata_warm_pool_name }}"
             namespace: "{{ agent_sandbox_namespace }}"
             labels:
-              app: "{{ agent_sandbox_python_warm_pool_name }}"
+              app: "{{ kata_warm_pool_name }}"
           spec:
-            replicas: {{ agent_sandbox_python_warm_pool_size | int }}
+            replicas: "{{ kata_warm_pool_size | int }}"
             sandboxTemplateRef:
-              name: python-sandbox-template
-      when: (agent_sandbox_python_warm_pool_size | int) > 0
+              name: "{{ kata_sandbox_template_name }}"
+      when: (kata_warm_pool_size | int) > 0
 
-# ── Kata-backed SandboxTemplate + warm pool (kata_containers platform component) ──
-# Outside the install block above so it also applies on an existing install.
-# Runtime class: kata-fc when kata-deploy created it (Firecracker), else kata-qemu.
-- name: "agent_sandbox | Kata SandboxTemplate"
-  when: kata_containers_enabled | default(false) | bool
-  block:
-    - name: "agent_sandbox | Get RuntimeClasses created by kata-deploy"
-      kubernetes.core.k8s_info:
-        api_version: node.k8s.io/v1
-        kind: RuntimeClass
-      register: kata_runtime_classes
-
-    - name: "agent_sandbox | Select kata RuntimeClass for the SandboxTemplate"
-      vars:
-        _rc_names: "{{ kata_runtime_classes.resources | map(attribute='metadata.name') | list }}"
-      ansible.builtin.set_fact:
-        kata_template_runtime_class: >-
-          {{ kata_fc_runtime_class if kata_fc_runtime_class in _rc_names
-             else (kata_qemu_runtime_class if kata_qemu_runtime_class in _rc_names else '') }}
-
-    - name: "agent_sandbox | No Kata RuntimeClass — skipping kata SandboxTemplate"
-      ansible.builtin.debug:
-        msg: >-
-          kata_containers_enabled is true but neither '{{ kata_fc_runtime_class }}' nor
-          '{{ kata_qemu_runtime_class }}' RuntimeClass exists (see the kata_containers
-          component output) — skipping the kata SandboxTemplate and warm pool.
-      when: kata_template_runtime_class | trim | length == 0
-
-    - name: "agent_sandbox | Apply kata SandboxTemplate and warm pool"
-      when: kata_template_runtime_class | trim | length > 0
-      block:
-        - name: "agent_sandbox | Read kata-templates.yaml content"
-          ansible.builtin.slurp:
-            src: "{{ role_path }}/../../charts/agent-sandbox/kata-templates.yaml"
-          register: kata_templates_content
-
-        - name: "agent_sandbox | Template and apply kata SandboxTemplate"
-          kubernetes.core.k8s:
-            state: present
-            definition: "{{ kata_templates_content['content'] | b64decode | regex_replace('KATA_RUNTIME_CLASS', kata_template_runtime_class | trim) | regex_replace('KATA_NODE_LABEL_KEY', kata_node_label_key) | regex_replace('python-runtime-sandbox:AGENT_SANDBOX_VERSION', agent_sandbox_python_runtime_image) | regex_replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent') | from_yaml_all | list }}"
-
-        - name: "agent_sandbox | Verify kata SandboxTemplate created"
-          kubernetes.core.k8s_info:
-            api_version: extensions.agents.x-k8s.io/v1beta1
-            kind: SandboxTemplate
-            namespace: "{{ agent_sandbox_namespace }}"
-            name: "{{ kata_sandbox_template_name }}"
-          register: kata_sandbox_template
-          failed_when: kata_sandbox_template.resources | length == 0
-
-        # No readiness gate on the pool: a per-node virtualisation problem must not
-        # hang the stack deployment.
-        - name: "agent_sandbox | Create kata SandboxWarmPool"
-          kubernetes.core.k8s:
-            state: present
-            definition: "{{ kata_warm_pool_manifest | from_yaml }}"
-          vars:
-            kata_warm_pool_manifest: |
-              apiVersion: extensions.agents.x-k8s.io/v1beta1
-              kind: SandboxWarmPool
-              metadata:
-                name: "{{ kata_warm_pool_name }}"
-                namespace: "{{ agent_sandbox_namespace }}"
-                labels:
-                  app: "{{ kata_warm_pool_name }}"
-              spec:
-                replicas: {{ kata_warm_pool_size }}
-                sandboxTemplateRef:
-                  name: "{{ kata_sandbox_template_name }}"
-          when: kata_warm_pool_size | int > 0
-
-        - name: "agent_sandbox | Kata SandboxTemplate summary"
-          ansible.builtin.debug:
-            msg:
-              - "Template : {{ kata_sandbox_template_name }} (runtimeClassName={{ kata_template_runtime_class | trim }})"
-              - "WarmPool : {{ kata_warm_pool_name }} (size={{ kata_warm_pool_size }})"
-              - "Verify   : kubectl get sandbox,pod -n {{ agent_sandbox_namespace }} -l sandbox=kata"
-
-- name: "agent_sandbox | Install complete"
+- name: "agent_sandbox | install | Show connection details"
   ansible.builtin.debug:
     msg:
-      - "Agent Sandbox deployed in namespace '{{ agent_sandbox_namespace }}'"
       - "Version: {{ agent_sandbox_version }}"
       - "Router: http://sandbox-router-svc.{{ agent_sandbox_namespace }}.svc.cluster.local:8080"
       - "WarmPool: {{ agent_sandbox_python_warm_pool_name }} (size={{ agent_sandbox_python_warm_pool_size }})"
+      - >-
+        Kata: {{ (kata_sandbox_template_name ~ ' (runtimeClassName=' ~ _agent_sandbox_kata_runtime_class ~ '), pool '
+                  ~ kata_warm_pool_name ~ ' (size=' ~ kata_warm_pool_size ~ ')')
+                 if _agent_sandbox_kata_runtime_class | length > 0 else 'not deployed' }}

@@ -1,19 +1,32 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Keycloak Agent Config — Validate
+# keycloak_agent_config | validate
+# =============================================================================
+# Read-only. Asserts the operator imported the realm without errors.
 # =============================================================================
 
-- name: "keycloak_agent_config | validate | Check KeycloakRealmImport"
+- name: "keycloak_agent_config | validate | Read KeycloakRealmImport"
   kubernetes.core.k8s_info:
     api_version: k8s.keycloak.org/v2beta1
     kind: KeycloakRealmImport
     name: "{{ keycloak_agent_realm }}"
-    namespace: "{{ keycloak_namespace }}"
-  register: _val_realm
-  failed_when: _val_realm.resources | default([]) | length == 0
+    namespace: "{{ keycloak_namespace | default('keycloak') }}"  # Foreign: owned by keycloak
+  register: _keycloak_agent_config_import
+  check_mode: false
 
-- name: "keycloak_agent_config | validate | Summary"
-  ansible.builtin.debug:
-    msg:
-      - "Realm '{{ keycloak_agent_realm }}': {{ 'OK' if _val_realm.resources | length > 0 else 'FAIL' }}"
-      - "Client: {{ keycloak_agent_client_id }}"
+- name: "keycloak_agent_config | validate | Assert realm import is done"
+  ansible.builtin.assert:
+    that:
+      - _keycloak_agent_config_import.resources | length > 0
+      - "'Done' in _keycloak_agent_config_conditions"
+      - "'HasErrors' not in _keycloak_agent_config_conditions"
+    fail_msg: >-
+      KeycloakRealmImport {{ keycloak_agent_realm }} is missing or not imported cleanly
+      (true conditions: {{ _keycloak_agent_config_conditions | join(', ') or 'none' }})
+    quiet: true
+  vars:
+    _keycloak_agent_config_conditions: >-
+      {{ (_keycloak_agent_config_import.resources | first | default({})).status.conditions | default([])
+         | selectattr('status', 'eq', 'True') | map(attribute='type') | list }}

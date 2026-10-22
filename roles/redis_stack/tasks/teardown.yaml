@@ -1,6 +1,11 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Redis Stack — Teardown
+# redis_stack | teardown
+# =============================================================================
+# Removes the Helm release. The namespace holds the data PVC, so it is deleted
+# only with redis_stack_teardown_delete_pvcs. A no-op when nothing is present.
 # =============================================================================
 
 - name: "redis_stack | teardown | Remove Helm release"
@@ -8,17 +13,14 @@
     name: "{{ redis_stack_release_name }}"
     release_namespace: "{{ redis_stack_namespace }}"
     state: absent
-    wait: true
-  failed_when: false
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
 
-- name: "redis_stack | teardown | Remove namespace"
+- name: "redis_stack | teardown | Remove namespace and data volumes"
   kubernetes.core.k8s:
     state: absent
     api_version: v1
     kind: Namespace
     name: "{{ redis_stack_namespace }}"
-  failed_when: false
-
-- name: "redis_stack | teardown | Complete"
-  ansible.builtin.debug:
-    msg: "Redis Stack removed from namespace '{{ redis_stack_namespace }}'"
+    wait: true
+  when: redis_stack_teardown_delete_pvcs | bool

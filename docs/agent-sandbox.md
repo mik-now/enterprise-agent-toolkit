@@ -297,7 +297,7 @@ curl -s http://localhost:8080/healthz
 ## Default SandboxTemplate
 
 The stack ships one template out of the box:
-`core/helm-charts/agent-sandbox/default-templates.yaml`
+`roles/agent_sandbox/templates/python-sandbox-template.yaml.j2`
 
 ```yaml
 apiVersion: extensions.agents.x-k8s.io/v1beta1
@@ -718,8 +718,8 @@ kata_warm_pool_size: 1
 
 ### Templates
 
-- **Default SandboxTemplate**: `core/helm-charts/agent-sandbox/default-templates.yaml`
-- **Kata SandboxTemplate**: `core/helm-charts/agent-sandbox/kata-templates.yaml`
+- **Default SandboxTemplate**: `roles/agent_sandbox/templates/python-sandbox-template.yaml.j2`
+- **Kata SandboxTemplate**: `roles/agent_sandbox/templates/kata-sandbox-template.yaml.j2`
 - **kata-deploy chart values**: `core/helm-charts/kata-deploy/values.yaml`
 
 ---

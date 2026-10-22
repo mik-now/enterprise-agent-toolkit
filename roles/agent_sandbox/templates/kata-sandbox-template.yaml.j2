@@ -1,0 +1,58 @@
+{# Copyright (C) 2025-2026 Intel Corporation #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{#
+  agent_sandbox | Kata-backed SandboxTemplate
+
+  Each sandbox boots as its own microVM with a separate guest kernel instead of
+  sharing the host kernel like a runc pod:
+
+    client.create_sandbox(template="<kata_sandbox_template_name>",
+                          namespace="<agent_sandbox_namespace>")
+
+  Inputs: _agent_sandbox_kata_runtime_class (kata-fc or kata-qemu, chosen by
+  install) and _agent_sandbox_kata_node_label_key/_value (from kata_containers).
+  The image is the same python-runtime-sandbox the default template uses, so the
+  k8s-agent-sandbox SDK works against both templates unchanged.
+#}
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: "{{ kata_sandbox_template_name }}"
+  namespace: "{{ agent_sandbox_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: agentic-ai-stack
+spec:
+  # service: true creates a headless Service per Sandbox pod, required for
+  # in-cluster DNS routing and SDK Tunnel mode.
+  service: true
+  podTemplate:
+    metadata:
+      labels:
+        sandbox: kata
+    spec:
+      runtimeClassName: "{{ _agent_sandbox_kata_runtime_class }}"
+      # Only nodes that passed the KVM preflight can run microVMs.
+      nodeSelector:
+        "{{ _agent_sandbox_kata_node_label_key }}": "{{ _agent_sandbox_kata_node_label_value }}"
+      containers:
+      - name: runtime
+        image: "{{ agent_sandbox_python_runtime_image }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: api
+          containerPort: 8888
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL

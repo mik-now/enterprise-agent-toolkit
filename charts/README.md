@@ -6,9 +6,12 @@
 charts/
 ├── redis-stack/          ← Redis Stack (auth + ClusterIP + NetworkPolicy hardened)
 ├── pgvector/             ← PostgreSQL + pgvector
-├── agent-sandbox/        ← Agent Sandbox (values.yaml + default-templates.yaml)
-└── kuberay/              ← KubeRay RayCluster
+├── kuberay/              ← KubeRay RayCluster
+└── openshell/            ← values overlay for the upstream OpenShell chart
 ```
+
+The Agent Sandbox templates and the OpenShell provider profile are rendered by their
+roles (`roles/<role>/templates/`), not by Helm.
 
 ## Adding a chart
 

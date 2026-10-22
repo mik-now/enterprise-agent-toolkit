@@ -1,10 +1,14 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# OpenShell — Teardown
+# openshell | teardown
 # =============================================================================
 # Removes what install applied: the Helm release and both namespaces (which
 # also removes the openshell-genai-key Secret, the replicated client TLS
 # secret and the sandbox NetworkPolicy), plus the LiteLLM PeerAuthentication.
+# The LiteLLM virtual key itself stays in LiteLLM. A no-op when nothing is
+# present.
 # =============================================================================
 
 - name: "openshell | teardown | Remove Helm release"
@@ -12,9 +16,10 @@
     name: "{{ openshell_release_name }}"
     release_namespace: "{{ openshell_namespace }}"
     state: absent
-    wait: true
-  failed_when: false
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
 
+# Install applies it only with Istio, whose CRD is absent otherwise.
 - name: "openshell | teardown | Remove LiteLLM PeerAuthentication"
   kubernetes.core.k8s:
     state: absent
@@ -22,7 +27,7 @@
     kind: PeerAuthentication
     name: openshell-sandbox-ingress
     namespace: "{{ openshell_genai_namespace }}"
-  failed_when: false
+  when: istio_enabled | default(false) | bool  # Foreign: owned by istio
 
 - name: "openshell | teardown | Remove namespaces"
   kubernetes.core.k8s:
@@ -30,11 +35,7 @@
     api_version: v1
     kind: Namespace
     name: "{{ item }}"
+    wait: true
   loop:
     - "{{ openshell_sandbox_namespace }}"
     - "{{ openshell_namespace }}"
-  failed_when: false
-
-- name: "openshell | teardown | Complete"
-  ansible.builtin.debug:
-    msg: "OpenShell removed from namespaces '{{ openshell_namespace }}' and '{{ openshell_sandbox_namespace }}'"

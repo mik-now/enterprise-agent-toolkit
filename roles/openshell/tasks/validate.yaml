@@ -1,16 +1,70 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# OpenShell — Validate
+# openshell | validate
+# =============================================================================
+# Read-only. Asserts the gateway is ready, the supervisors' client TLS secret
+# is present in the sandbox namespace, the sandbox NetworkPolicy is applied
+# and, when LiteLLM runs, the provider's virtual key is stored.
 # =============================================================================
 
-- name: "openshell | validate | Verify OpenShell gateway is ready"
-  ansible.builtin.command: >
-    kubectl rollout status statefulset/{{ openshell_release_name }}
-    -n {{ openshell_namespace }} --timeout=60s
-  register: _val_gateway
-  changed_when: false
+- name: "openshell | validate | Read gateway"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: "{{ openshell_release_name }}"
+    namespace: "{{ openshell_namespace }}"
+  register: _openshell_gateway
+  check_mode: false
 
-- name: "openshell | validate | Summary"
-  ansible.builtin.debug:
-    msg:
-      - "Gateway: {{ 'OK' if _val_gateway.rc == 0 else 'FAIL' }} (statefulset/{{ openshell_release_name }} in {{ openshell_namespace }})"
+- name: "openshell | validate | Read sandbox namespace objects"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ openshell_sandbox_namespace }}"
+  loop:
+    - {api_version: v1, kind: Secret, name: "{{ openshell_client_tls_secret }}"}
+    - {api_version: networking.k8s.io/v1, kind: NetworkPolicy, name: eat-openshell-sandbox-pods}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  register: _openshell_sandbox_objects
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
+
+- name: "openshell | validate | Read GenAI Gateway deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openshell_genai_deployment }}"
+    namespace: "{{ openshell_genai_namespace }}"
+  register: _openshell_genai
+  check_mode: false
+  when: openshell_genai_provider_enabled | bool
+
+- name: "openshell | validate | Read LiteLLM virtual key secret"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: openshell-genai-key
+    namespace: "{{ openshell_namespace }}"
+  register: _openshell_genai_key
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
+
+- name: "openshell | validate | Assert OpenShell is healthy"
+  ansible.builtin.assert:
+    that:
+      - _openshell_gateway.resources | length > 0
+      - (_openshell_gateway.resources[0].status.readyReplicas | default(0) | int)
+        == (_openshell_gateway.resources[0].spec.replicas | default(1) | int)
+      - _openshell_sandbox_objects.results[0].resources | length > 0
+      - not (openshell_sandbox_network_policy | bool) or _openshell_sandbox_objects.results[1].resources | length > 0
+      - _openshell_genai.resources | default([]) | length == 0 or _openshell_genai_key.resources | length > 0
+    fail_msg: >-
+      OpenShell is not healthy: needs a ready statefulset/{{ openshell_release_name }} in
+      {{ openshell_namespace }}, Secret {{ openshell_client_tls_secret }} (and, if enabled,
+      NetworkPolicy eat-openshell-sandbox-pods) in {{ openshell_sandbox_namespace }}, and
+      Secret openshell-genai-key when the GenAI Gateway runs.
+    quiet: true

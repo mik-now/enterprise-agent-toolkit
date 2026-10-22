@@ -1,7 +1,21 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Keycloak Agent Config — Teardown
+# keycloak_agent_config | teardown
 # =============================================================================
+# Removes the KeycloakRealmImport. The Keycloak operator does not delete an
+# imported realm, so the realm itself stays in Keycloak. A no-op when Keycloak
+# (its CRD) or the import is absent.
+# =============================================================================
+
+- name: "keycloak_agent_config | teardown | Read KeycloakRealmImport CRD"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: keycloakrealmimports.k8s.keycloak.org
+  register: _keycloak_agent_config_crd
+  check_mode: false
 
 - name: "keycloak_agent_config | teardown | Remove KeycloakRealmImport"
   kubernetes.core.k8s:
@@ -9,9 +23,5 @@
     api_version: k8s.keycloak.org/v2beta1
     kind: KeycloakRealmImport
     name: "{{ keycloak_agent_realm }}"
-    namespace: "{{ keycloak_namespace }}"
-  failed_when: false
-
-- name: "keycloak_agent_config | teardown | Complete"
-  ansible.builtin.debug:
-    msg: "Keycloak agent realm '{{ keycloak_agent_realm }}' removed"
+    namespace: "{{ keycloak_namespace | default('keycloak') }}"  # Foreign: owned by keycloak
+  when: _keycloak_agent_config_crd.resources | length > 0

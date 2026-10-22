@@ -1,9 +1,12 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Agent Sandbox — Teardown
+# agent_sandbox | teardown
 # =============================================================================
-# Removes what install applied: sandbox-router, controller + CRDs (via the
-# upstream release manifests), and the namespace.
+# Removes the sandbox-router, the release manifests (controller and CRDs, which
+# also removes every Sandbox, template and warm pool) and the namespace. Runs
+# after openshell, which depends on these CRDs. A no-op when nothing is present.
 # =============================================================================
 
 - name: "agent_sandbox | teardown | Remove sandbox-router deployment"
@@ -13,19 +16,14 @@
     kind: Deployment
     name: sandbox-router-deployment
     namespace: "{{ agent_sandbox_namespace }}"
-  failed_when: false
 
-- name: "agent_sandbox | teardown | Remove extensions manifest (SandboxTemplate/Claim/WarmPool CRDs)"
+- name: "agent_sandbox | teardown | Remove release manifests"
   kubernetes.core.k8s:
     state: absent
-    src: "{{ agent_sandbox_extensions_manifest_url }}"
-  failed_when: false
-
-- name: "agent_sandbox | teardown | Remove core manifest (CRDs + controller)"
-  kubernetes.core.k8s:
-    state: absent
-    src: "{{ agent_sandbox_core_manifest_url }}"
-  failed_when: false
+    src: "{{ item }}"
+  loop:
+    - "{{ agent_sandbox_extensions_manifest_url }}"
+    - "{{ agent_sandbox_core_manifest_url }}"
 
 - name: "agent_sandbox | teardown | Remove namespace"
   kubernetes.core.k8s:
@@ -33,8 +31,4 @@
     api_version: v1
     kind: Namespace
     name: "{{ agent_sandbox_namespace }}"
-  failed_when: false
-
-- name: "agent_sandbox | teardown | Complete"
-  ansible.builtin.debug:
-    msg: "Agent Sandbox removed from namespace '{{ agent_sandbox_namespace }}'"
+    wait: true

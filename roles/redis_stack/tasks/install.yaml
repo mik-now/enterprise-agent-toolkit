@@ -1,38 +1,53 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Redis Stack — Install via Helm
+# redis_stack | install
+# =============================================================================
+# Installs or upgrades the vendored redis-stack chart. The password is generated
+# on first install and read back from the chart's credentials Secret afterwards,
+# so a re-run does not rotate it.
 # =============================================================================
 
-- name: "redis_stack | Check for existing Helm release"
-  kubernetes.core.helm_info:
-    name: "{{ redis_stack_release_name }}"
-    release_namespace: "{{ redis_stack_namespace }}"
-  register: _redis_release
-  failed_when: false
-  no_log: true
+- name: "redis_stack | install | Read existing credentials"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: redis-stack-server-credentials
+    namespace: "{{ redis_stack_namespace }}"
+  register: _redis_stack_secret
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
 
-- name: "redis_stack | Already installed — skipping"
-  ansible.builtin.debug:
-    msg: "Redis Stack already deployed in {{ redis_stack_namespace }} — skipping install."
-  when: _redis_release.status is defined and _redis_release.status is not none
+- name: "redis_stack | install | Resolve password"
+  ansible.builtin.set_fact:
+    _redis_stack_effective_password: >-
+      {{ _redis_stack_secret.resources[0].data.REDIS_PASSWORD | b64decode
+         if _redis_stack_secret.resources | length > 0
+            and 'REDIS_PASSWORD' in _redis_stack_secret.resources[0].data | default({})
+         else redis_stack_password }}
+  no_log: "{{ secure_logs | default(true) | bool }}"
 
-- name: "redis_stack | Install"
-  when: _redis_release.status is not defined or _redis_release.status is none
-  block:
-
-    - name: "redis_stack | Create namespace"
-      kubernetes.core.k8s:
-        kind: Namespace
+- name: "redis_stack | install | Create namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
         name: "{{ redis_stack_namespace }}"
-        state: present
-    - name: "redis_stack | Install via Helm"
+
+# no_log hides the chart's error together with the password, so the rescue
+# re-raises the module message on its own.
+- name: "redis_stack | install | Deploy chart"
+  block:
+    - name: "redis_stack | install | Install chart"
       kubernetes.core.helm:
         name: "{{ redis_stack_release_name }}"
-        chart_ref: "{{ role_path }}/../../charts/redis-stack"
+        chart_ref: "{{ redis_stack_chart_path }}"
         release_namespace: "{{ redis_stack_namespace }}"
-        create_namespace: true
-        wait: true
-        timeout: "10m0s"
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
         values:
           # Overrides go under the subchart name (redis-stack-server), not "redis".
           redis-stack-server:
@@ -41,36 +56,38 @@
               storage: "{{ redis_stack_persistence_size }}"
               auth:
                 enabled: "{{ redis_stack_auth_enabled | bool }}"
-                password: "{{ redis_stack_password }}"
-      register: _redis_helm
-      no_log: true
-      ignore_errors: true
+                password: "{{ _redis_stack_effective_password }}"
+      register: _redis_stack_helm
+      retries: "{{ helm_retries }}"
+      delay: 15
+      until: _redis_stack_helm is succeeded
+      no_log: "{{ secure_logs | default(true) | bool }}"
+  rescue:
+    - name: "redis_stack | install | Report chart failure"
+      ansible.builtin.fail:
+        msg: "Redis Stack Helm install failed: {{ _redis_stack_helm.msg | default('no error message returned') }}"
 
-    - name: "redis_stack | Check Helm install result"
-      ansible.builtin.assert:
-        that: _redis_helm is succeeded
-        fail_msg: "Redis Stack Helm install failed: {{ _redis_helm.msg | default('no error message returned') }}"
-        quiet: true
+- name: "redis_stack | install | Wait for pods to be ready"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ redis_stack_namespace }}"
+    label_selectors:
+      # The vendored redis-stack-server chart labels pods `app: redis-stack-server`
+      # (not the standard app.kubernetes.io/instance).
+      - app=redis-stack-server
+  register: _redis_stack_pods
+  until:
+    - _redis_stack_pods.resources | length > 0
+    - _redis_stack_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
+  retries: 60
+  delay: 5
+  check_mode: false
 
-    - name: "redis_stack | Wait for pods to be ready"
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Pod
-        namespace: "{{ redis_stack_namespace }}"
-        label_selectors:
-          # The vendored redis-stack-server chart labels pods `app: redis-stack-server`
-          # (not the standard app.kubernetes.io/instance).
-          - app=redis-stack-server
-      register: _redis_pods
-      until:
-        - _redis_pods.resources | default([]) | length > 0
-        - _redis_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
-      retries: 60
-      delay: 5
-
-- name: "redis_stack | Install complete"
+- name: "redis_stack | install | Show connection details"
   ansible.builtin.debug:
     msg:
-      - "Redis Stack deployed in namespace '{{ redis_stack_namespace }}'"
-      - "In-cluster URL: redis://default:<password>@redis-stack-server.{{ redis_stack_namespace }}.svc.cluster.local:6379"
+      - "In-cluster URL: redis://default:<password>@{{ _redis_stack_host }}:6379"
       - "Credentials Secret: redis-stack-server-credentials (keys: REDIS_PASSWORD, REDIS_URL)"
+  vars:
+    _redis_stack_host: "redis-stack-server.{{ redis_stack_namespace }}.svc.cluster.local"

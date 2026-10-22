@@ -1,23 +1,24 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# KubeRay — Teardown
+# kuberay | teardown
+# =============================================================================
+# Removes the RayCluster release, then the operator release and the namespace.
+# The operator's CRDs stay (Helm never deletes CRDs). A no-op when nothing is
+# present.
 # =============================================================================
 
-- name: "kuberay | teardown | Remove RayCluster release"
+- name: "kuberay | teardown | Remove Helm releases"
   kubernetes.core.helm:
-    name: "{{ kuberay_release_name }}"
+    name: "{{ item }}"
     release_namespace: "{{ kuberay_namespace }}"
     state: absent
-    wait: true
-  failed_when: false
-
-- name: "kuberay | teardown | Remove operator release"
-  kubernetes.core.helm:
-    name: "{{ kuberay_operator_release_name }}"
-    release_namespace: "{{ kuberay_namespace }}"
-    state: absent
-    wait: true
-  failed_when: false
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
+  loop:
+    - "{{ kuberay_release_name }}"
+    - "{{ kuberay_operator_release_name }}"
 
 - name: "kuberay | teardown | Remove namespace"
   kubernetes.core.k8s:
@@ -25,8 +26,4 @@
     api_version: v1
     kind: Namespace
     name: "{{ kuberay_namespace }}"
-  failed_when: false
-
-- name: "kuberay | teardown | Complete"
-  ansible.builtin.debug:
-    msg: "KubeRay removed from namespace '{{ kuberay_namespace }}'"
+    wait: true

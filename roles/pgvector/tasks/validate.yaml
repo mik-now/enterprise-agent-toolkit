@@ -1,43 +1,66 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# pgvector — Validate
+# pgvector | validate
+# =============================================================================
+# Read-only. Asserts PostgreSQL answers with the pgvector extension loaded and
+# that the credentials Secret carries the connection keys.
 # =============================================================================
 
-- name: "pgvector | validate | Check pods are running"
+- name: "pgvector | validate | Read pgvector pods"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: "{{ pgvector_namespace }}"
     label_selectors:
       - app.kubernetes.io/name=pgvector
-  register: _val_pods
-  failed_when: >-
-    _val_pods.resources | default([]) | length == 0 or
-    _val_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length == 0
+    field_selectors:
+      - status.phase=Running
+  register: _pgvector_pods
+  check_mode: false
 
-- name: "pgvector | validate | Check pgvector extension"
+- name: "pgvector | validate | Assert a pgvector pod is running"
+  ansible.builtin.assert:
+    that: _pgvector_pods.resources | length > 0
+    fail_msg: "No running pgvector pod in namespace {{ pgvector_namespace }}"
+    quiet: true
+
+- name: "pgvector | validate | Query pgvector extension"
   kubernetes.core.k8s_exec:
     namespace: "{{ pgvector_namespace }}"
-    pod: "{{ _val_pods.resources[0].metadata.name }}"
-    command: >
-      psql -U {{ pgvector_username }} -d {{ pgvector_database }}
+    pod: "{{ _pgvector_pods.resources[0].metadata.name }}"
+    command: >-
+      psql -U {{ pgvector_username }} -d {{ pgvector_database }} -tA
       -c "SELECT extname FROM pg_extension WHERE extname='vector';"
-  register: _val_ext
-  failed_when: "'vector' not in _val_ext.stdout | default('')"
+  register: _pgvector_ext
   changed_when: false
+  failed_when: false
+  check_mode: false
 
-- name: "pgvector | validate | Check credentials secret exists"
+- name: "pgvector | validate | Assert pgvector extension is loaded"
+  ansible.builtin.assert:
+    that: "'vector' in _pgvector_ext.stdout | default('')"
+    fail_msg: >-
+      pgvector extension not loaded in {{ pgvector_database }}:
+      {{ (_pgvector_ext.stderr | default('') ~ ' ' ~ _pgvector_ext.msg | default('')) | trim }}
+    quiet: true
+
+- name: "pgvector | validate | Read credentials secret"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
     name: pgvector-credentials
     namespace: "{{ pgvector_namespace }}"
-  register: _val_secret
-  failed_when: _val_secret.resources | default([]) | length == 0
+  register: _pgvector_secret
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
 
-- name: "pgvector | validate | Summary"
-  ansible.builtin.debug:
-    msg:
-      - "pgvector pods: OK ({{ _val_pods.resources | length }} running)"
-      - "pgvector extension: {{ 'OK' if 'vector' in _val_ext.stdout | default('') else 'FAIL' }}"
-      - "Credentials secret: {{ 'OK' if _val_secret.resources | length > 0 else 'FAIL' }}"
+- name: "pgvector | validate | Assert credentials secret has the connection keys"
+  ansible.builtin.assert:
+    that:
+      - _pgvector_secret.resources | length > 0
+      - _pgvector_secret.resources[0].data | default({})
+        is superset(['DATABASE_URL', 'host', 'port', 'database', 'username', 'password'])
+    fail_msg: "Secret pgvector-credentials in {{ pgvector_namespace }} is missing or lacks connection keys"
+    quiet: true

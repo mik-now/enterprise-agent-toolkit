@@ -1,47 +1,36 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Agent Sandbox Role Defaults
+# agent_sandbox | defaults
 # =============================================================================
-# kubernetes-sigs/agent-sandbox — ephemeral code execution with
-# policy-based blast-radius limits for agentic workloads.
-#
+# kubernetes-sigs/agent-sandbox: ephemeral code execution with policy-based
+# blast-radius limits for agentic workloads. Deploys, from the upstream release
+# manifests, the CRDs + controller, the SandboxTemplate/Claim/WarmPool
+# extensions, the sandbox-router, a default python SandboxTemplate + warm pool
+# and, with kata_containers, a Kata-backed template + warm pool.
 #
 # In-cluster URL after deployment:
-#   http://sandbox-router-svc.{{ agent_sandbox_namespace }}.svc.cluster.local:8080
-#
-# Components deployed:
-#   1. CRDs + controller           (core manifest)
-#   2. SandboxTemplate/Claim/WarmPool CRDs (extensions manifest)
-#   3. sandbox-router              (downloaded manifest, published image)
-#   4. Default SandboxTemplate     (python-sandbox-template)
+#   http://sandbox-router-svc.<agent_sandbox_namespace>.svc.cluster.local:8080
 # =============================================================================
 
-agent_sandbox_namespace: "agent-sandbox-system"
-agent_sandbox_version: "v0.5.0"
-agent_sandbox_release_name: "agent-sandbox"
-
-# Published images — no local builds needed. The controller image is baked
-# into the upstream core manifest (registry.k8s.io/agent-sandbox/agent-sandbox-controller).
+# ── Version / source ──────────────────────────────────────────────────────────
+agent_sandbox_version: "v0.5.0"  # upstream release
+# The controller image is pinned by the core manifest.
 agent_sandbox_router_image: "us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/sandbox-router:latest-main"
 agent_sandbox_python_runtime_image: "registry.k8s.io/agent-sandbox/python-runtime-sandbox:{{ agent_sandbox_version }}"
-
-# Official upstream release manifest URLs
 agent_sandbox_core_manifest_url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/{{ agent_sandbox_version }}/manifest.yaml"
 agent_sandbox_extensions_manifest_url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/{{ agent_sandbox_version }}/extensions.yaml"
 agent_sandbox_router_manifest_url: "https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/{{ agent_sandbox_version }}/clients/python/agentic-sandbox-client/sandbox-router/sandbox_router.yaml"
 
-# Default python SandboxWarmPool — pre-warmed sandbox pods for low-latency
-# code execution. Set size to 0 to disable pre-creating warm pods.
-agent_sandbox_python_warm_pool_name: "python-pool"
-agent_sandbox_python_warm_pool_size: 5
+# ── Placement ─────────────────────────────────────────────────────────────────
+agent_sandbox_namespace: "agent-sandbox-system"  # controller, router, templates and warm pools
 
-# Kata-backed SandboxTemplate + warm pool.
-# Applied only when the platform kata_containers component is enabled
-# (kata_containers_enabled) and kata-deploy created a Kata RuntimeClass.
-kata_node_label_key: "ei-kata-eligible"
-kata_fc_runtime_class: "kata-fc"
-kata_qemu_runtime_class: "kata-qemu"
-kata_sandbox_template_name: "kata-sandbox-template"
-kata_warm_pool_name: "kata-pool"
-# microVMs cost more than plain pods — keep the default pool small
-kata_warm_pool_size: 1
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+agent_sandbox_python_warm_pool_name: "python-pool"  # SandboxWarmPool of python-sandbox-template
+agent_sandbox_python_warm_pool_size: 5              # pre-warmed sandbox pods; 0 = no pool
+# Kata template + pool: applied only with kata_containers_enabled and a kata RuntimeClass
+# (kata_fc_runtime_class preferred, else kata_qemu_runtime_class, both owned by kata_containers).
+kata_sandbox_template_name: "kata-sandbox-template"  # SandboxTemplate name
+kata_warm_pool_name: "kata-pool"                     # SandboxWarmPool name
+kata_warm_pool_size: 1                               # microVMs cost more than pods; 0 = no pool

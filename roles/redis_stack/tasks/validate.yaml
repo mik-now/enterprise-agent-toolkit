@@ -1,68 +1,75 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Redis Stack — Validate
+# redis_stack | validate
+# =============================================================================
+# Read-only. Asserts Redis answers PING with the stored credentials and has the
+# RediSearch module loaded.
 # =============================================================================
 
-- name: "redis_stack | validate | Check pods are running"
+- name: "redis_stack | validate | Read Redis pods"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
     namespace: "{{ redis_stack_namespace }}"
     label_selectors:
       - app=redis-stack-server
-  register: _val_pods
-  failed_when: >-
-    _val_pods.resources | default([]) | length == 0 or
-    _val_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length == 0
+    field_selectors:
+      - status.phase=Running
+  register: _redis_stack_pods
+  check_mode: false
 
-- name: "redis_stack | validate | Get Redis password from secret"
-  ansible.builtin.shell: |
-    kubectl get secret -n {{ redis_stack_namespace }} redis-stack-server-credentials -o jsonpath='{.data.REDIS_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null || \
-    kubectl exec -n {{ redis_stack_namespace }} pod/{{ _val_pods.resources[0].metadata.name }} -- printenv REDIS_PASSWORD 2>/dev/null || echo ""
-  register: _redis_pass
-  changed_when: false
-  no_log: true
-  ignore_errors: true
+- name: "redis_stack | validate | Assert a Redis pod is running"
+  ansible.builtin.assert:
+    that: _redis_stack_pods.resources | length > 0
+    fail_msg: "No running redis-stack-server pod in namespace {{ redis_stack_namespace }}"
+    quiet: true
 
-- name: "redis_stack | validate | Check Redis PING"
+# The chart creates the Secret only when auth is enabled.
+- name: "redis_stack | validate | Read credentials"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: redis-stack-server-credentials
+    namespace: "{{ redis_stack_namespace }}"
+  register: _redis_stack_secret
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
+
+- name: "redis_stack | validate | Query Redis"
   kubernetes.core.k8s_exec:
     namespace: "{{ redis_stack_namespace }}"
-    pod: "{{ _val_pods.resources[0].metadata.name }}"
-    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim | quote) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}PING"
-  register: _val_ping
-  failed_when: false
+    pod: "{{ _redis_stack_pods.resources[0].metadata.name }}"
+    command: "redis-cli {{ _redis_stack_auth_args }}{{ item }}"
+  vars:
+    _redis_stack_password: >-
+      {{ _redis_stack_secret.resources[0].data.REDIS_PASSWORD | default('') | b64decode
+         if _redis_stack_secret.resources | length > 0 else '' }}
+    _redis_stack_auth_args: >-
+      {{ ('-a ' ~ (_redis_stack_password | trim | quote) ~ ' --no-auth-warning ')
+         if _redis_stack_password | trim | length > 0 else '' }}
+  loop: [PING, MODULE LIST]
+  register: _redis_stack_queries
   changed_when: false
-  no_log: true
+  failed_when: false
+  check_mode: false
+  no_log: "{{ secure_logs | default(true) | bool }}"
 
 - name: "redis_stack | validate | Assert Redis answered PING"
   ansible.builtin.assert:
-    that: "'PONG' in _val_ping.stdout | default('')"
+    that: "'PONG' in _redis_stack_queries.results[0].stdout | default('')"
     fail_msg: >-
       Redis PING failed:
-      {{ (_val_ping.stdout | default('') ~ ' ' ~ _val_ping.stderr | default('') ~ ' ' ~ _val_ping.msg | default('')) | trim }}
+      {{ (_redis_stack_queries.results[0].stderr | default('') ~ ' '
+          ~ _redis_stack_queries.results[0].msg | default('')) | trim }}
     quiet: true
-
-- name: "redis_stack | validate | Check RediSearch module loaded"
-  kubernetes.core.k8s_exec:
-    namespace: "{{ redis_stack_namespace }}"
-    pod: "{{ _val_pods.resources[0].metadata.name }}"
-    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim | quote) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}MODULE LIST"
-  register: _val_modules
-  failed_when: false
-  changed_when: false
-  no_log: true
 
 - name: "redis_stack | validate | Assert RediSearch module is loaded"
   ansible.builtin.assert:
-    that: "'search' in _val_modules.stdout | default('')"
+    that: "'search' in _redis_stack_queries.results[1].stdout | default('')"
     fail_msg: >-
       RediSearch module not loaded:
-      {{ (_val_modules.stdout | default('') ~ ' ' ~ _val_modules.stderr | default('') ~ ' ' ~ _val_modules.msg | default('')) | trim }}
+      {{ (_redis_stack_queries.results[1].stderr | default('') ~ ' '
+          ~ _redis_stack_queries.results[1].msg | default('')) | trim }}
     quiet: true
-
-- name: "redis_stack | validate | Summary"
-  ansible.builtin.debug:
-    msg:
-      - "Redis pods: OK ({{ _val_pods.resources | length }} running)"
-      - "Redis PING: {{ 'OK' if 'PONG' in _val_ping.stdout | default('') else 'FAIL' }}"
-      - "RediSearch module: {{ 'OK' if 'search' in _val_modules.stdout | default('') else 'FAIL' }}"

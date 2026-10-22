@@ -1,24 +1,33 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# pgvector Role Defaults
+# pgvector | defaults
 # =============================================================================
-# PostgreSQL 16 + pgvector extension — provides long-term memory,
-# vector embeddings, and RAG state for agentic workloads.
+# PostgreSQL + the pgvector extension: long-term memory, vector embeddings and
+# RAG state for agentic workloads.
 #
+# In-cluster address after deployment:
+#   pgvector.<pgvector_namespace>.svc.cluster.local:5432
+# Credentials: Secret pgvector-credentials (DATABASE_URL, host, port, ...)
 # =============================================================================
 
-pgvector_namespace: "pgvector"
-pgvector_release_name: "pgvector"
-pgvector_database: "agentdb"
-pgvector_username: "agentuser"
-pgvector_storage_size: "20Gi"
-pgvector_storage_class: ""
-pgvector_version: "16"
+# ── Version / source ──────────────────────────────────────────────────────────
+pgvector_version: "16"                                          # PostgreSQL major (image pgvector/pgvector:pg<version>)
+pgvector_chart_path: "{{ role_path }}/../../charts/pgvector"  # vendored chart
+pgvector_release_name: "pgvector"                               # Helm release name
 
-pgvector_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+# ── Placement ─────────────────────────────────────────────────────────────────
+pgvector_namespace: "pgvector"  # created by install
 
-
-# Resources
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+pgvector_database: "agentdb"    # database created on first start
+pgvector_username: "agentuser"  # database owner
+pgvector_storage_size: "20Gi"   # PVC size of the data volume
+pgvector_storage_class: ""      # empty = cluster default StorageClass (ai-solutions storage)
+# Used on first install only; later runs keep the password stored in Secret pgvector-auth.
+pgvector_password: "{{ lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+# Pod resources: requests/limits dict, passed to the chart as is.
 pgvector_resources:
   requests:
     cpu: "250m"
@@ -26,3 +35,4 @@ pgvector_resources:
   limits:
     cpu: "2"
     memory: "2Gi"
+pgvector_teardown_delete_pvcs: false  # true = teardown also deletes the namespace, data PVC and password

@@ -1,9 +1,15 @@
-# Copyright (C) 2025-2026 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-#
-# OpenShell provider profile for the EAT GenAI Gateway (LiteLLM, OpenAI-compatible).
-# GENAI_HOST / GENAI_PORT are substituted by the openshell role.
+{# Copyright (C) 2025-2026 Intel Corporation #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{#
+  openshell | provider profile for the EAT GenAI Gateway (LiteLLM, OpenAI-compatible)
+
+  Inputs: openshell_genai_service_host/_port, and _openshell_profile_resource_version
+  when updating a stored profile (update is optimistic-concurrency).
+#}
 id: eat-genai-gateway
+{% if _openshell_profile_resource_version | default('') | length > 0 %}
+resource_version: {{ _openshell_profile_resource_version }}
+{% endif %}
 display_name: EAT GenAI Gateway (LiteLLM)
 description: Intel® Enterprise Agent Toolkit LiteLLM gateway (OpenAI-compatible)
 category: inference
@@ -16,8 +22,8 @@ credentials:
     auth_style: bearer
     header_name: authorization
 endpoints:
-  - host: GENAI_HOST
-    port: GENAI_PORT
+  - host: "{{ openshell_genai_service_host }}"
+    port: {{ openshell_genai_service_port | int }}
     protocol: rest
     access: read-write
     enforcement: enforce

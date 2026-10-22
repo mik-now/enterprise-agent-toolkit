@@ -1,17 +1,15 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Keycloak Agent Config Role Defaults
+# keycloak_agent_config | defaults
 # =============================================================================
-# Creates an agent-toolkit realm and client on the existing platform Keycloak.
-# Does NOT deploy Keycloak itself — that's handled by the platform layer.
+# Creates the agent-toolkit realm and client on the platform Keycloak through a
+# KeycloakRealmImport. Does not deploy Keycloak: the platform keycloak role
+# does, and its keycloak_namespace is read as a foreign variable.
 # =============================================================================
 
-keycloak_agent_realm: "agent-toolkit"
-keycloak_agent_client_id: "agent-toolkit-client"
-keycloak_agent_token_lifespan: 900
-
-# Platform Keycloak connection. Plain default (the base keycloak role uses the
-# `keycloak` namespace); overridden automatically if the platform sets it.
-keycloak_namespace: "keycloak"
-# checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
-keycloak_admin_secret: "keycloak-admin-secret"   # created by the base keycloak role
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+keycloak_agent_realm: "agent-toolkit"            # realm (and KeycloakRealmImport) name
+keycloak_agent_client_id: "agent-toolkit-client" # public OIDC client of the realm
+keycloak_agent_token_lifespan: 900               # access token lifespan, seconds

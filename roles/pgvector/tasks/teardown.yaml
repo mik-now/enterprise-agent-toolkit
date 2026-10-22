@@ -1,6 +1,12 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# pgvector — Teardown
+# pgvector | teardown
+# =============================================================================
+# Removes the Helm release (and with it Secret pgvector-credentials). The
+# namespace holds the data PVC and Secret pgvector-auth, so it is deleted only
+# with pgvector_teardown_delete_pvcs. A no-op when nothing is present.
 # =============================================================================
 
 - name: "pgvector | teardown | Remove Helm release"
@@ -8,26 +14,14 @@
     name: "{{ pgvector_release_name }}"
     release_namespace: "{{ pgvector_namespace }}"
     state: absent
-    wait: true
-  failed_when: false
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
 
-- name: "pgvector | teardown | Remove credentials secret"
-  kubernetes.core.k8s:
-    state: absent
-    api_version: v1
-    kind: Secret
-    name: pgvector-credentials
-    namespace: "{{ pgvector_namespace }}"
-  failed_when: false
-
-- name: "pgvector | teardown | Remove namespace"
+- name: "pgvector | teardown | Remove namespace, data volume and password"
   kubernetes.core.k8s:
     state: absent
     api_version: v1
     kind: Namespace
     name: "{{ pgvector_namespace }}"
-  failed_when: false
-
-- name: "pgvector | teardown | Complete"
-  ansible.builtin.debug:
-    msg: "pgvector removed from namespace '{{ pgvector_namespace }}'"
+    wait: true
+  when: pgvector_teardown_delete_pvcs | bool
